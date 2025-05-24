@@ -1,0 +1,2 @@
+[default.databases.mysql_db]
+url = "mysql://root:root@127.0.0.1/rust_db"
