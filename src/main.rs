@@ -8,10 +8,20 @@ use rocket_sync_db_pools::database;
 use rocket::serde::json::Json;
 use diesel::prelude::*;
 use diesel::mysql::MysqlConnection;
-use diesel::r2d2::{self, ConnectionManager};
+
 use models::{User, NewUser};
 
-type DbPool = r2d2::Pool<ConnectionManager<MysqlConnection>>;
+
+
+use aws_sdk_s3::primitives::ByteStream;
+use uuid::Uuid;
+
+#[derive(serde::Deserialize)]
+struct UploadRequest {
+    url: String,
+}
+
+
 
 #[get("/users")]
 async fn get_users(conn: DbConn) -> Json<Vec<User>> {
@@ -99,26 +109,69 @@ async fn billion_iterations() -> &'static str {
     "Completed Billion Iterations"
 }
 
-// --- DB connection wrapper ---
-#[database("mysql_db")]
-struct DbConn(MysqlConnection);
 
-#[launch]
-fn rocket() -> _ {
-    dotenvy::dotenv().ok();
 
-    rocket::build()
-        .attach(DbConn::fairing())
-        .mount(
-            "/", 
-            routes![
-                get_users, create_user,
-                delete_user, update_user,
-                get_user, billion_iterations
-            ]
-        )
+// =============================================================================================
+// =============================================================================================
+
+
+#[post("/upload", data = "<payload>")]
+async fn upload_file_from_url_to_s3(payload: Json<UploadRequest>) -> Json<serde_json::Value> {
+    if !payload.url.starts_with("http") {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "Invalid URL"
+        }));
+    }
+
+    match download_and_upload(&payload.url).await {
+        Ok(url) => Json(serde_json::json!({
+            "success": true,
+            "file_url": url
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "message": e
+        })),
+    }
 }
 
+async fn download_and_upload(file_url: &str) -> Result<String, String> {
+    // Download file
+    let resp = reqwest::get(file_url).await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err("Failed to download file".to_string());
+    }
+
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+
+    // Init AWS S3 Client
+    let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let client = aws_sdk_s3::Client::new(&config);
+
+    // Guess file extension
+    let ext = mime_guess::from_path(file_url)
+        .first_or_text_plain()
+        .subtype()
+        .as_str()
+        .to_string();
+
+    let file_name = format!("uploads/{}.{}", Uuid::new_v4(), ext);
+
+    // Upload to S3
+    client.put_object()
+        .bucket(std::env::var("AWS_BUCKET").unwrap())
+        .key(&file_name)
+        .body(ByteStream::from(bytes.to_vec()))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let bucket_url = std::env::var("AWS_URL")
+        .unwrap_or_else(|_| format!("https://{}.s3.amazonaws.com", std::env::var("AWS_BUCKET").unwrap()));
+
+    Ok(format!("{}/{}", bucket_url, file_name))
+}
 
 
 
@@ -276,3 +329,26 @@ fn rocket() -> _ {
 //         distribution_category: rng.gen_range(1..=5),
 //     }
 // }
+
+
+
+// --- DB connection wrapper ---
+#[database("mysql_db")]
+struct DbConn(MysqlConnection);
+
+#[launch]
+fn rocket() -> _ {
+    dotenvy::dotenv().ok();
+
+    rocket::build()
+        .attach(DbConn::fairing())
+        .mount(
+            "/",
+            routes![
+                get_users, create_user,
+                delete_user, update_user,
+                get_user, billion_iterations,
+                upload_file_from_url_to_s3
+            ]
+        )
+}
