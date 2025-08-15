@@ -8,7 +8,6 @@ use rocket_sync_db_pools::database;
 use rocket::serde::json::Json;
 use diesel::prelude::*;
 use diesel::mysql::MysqlConnection;
-
 use models::{User, NewUser};
 
 
