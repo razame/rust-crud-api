@@ -10,8 +10,6 @@ use diesel::prelude::*;
 use diesel::mysql::MysqlConnection;
 use models::{User, NewUser};
 
-
-
 use aws_sdk_s3::primitives::ByteStream;
 use uuid::Uuid;
 
